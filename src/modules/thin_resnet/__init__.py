@@ -1,0 +1,1 @@
+from modules.thin_resnet.model import ResNetSE

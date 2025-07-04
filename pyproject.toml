@@ -1,0 +1,18 @@
+[project]
+name = "chns"
+version = "1.0"
+requires-python = ">=3.10"
+description = "Source code for Interspeech 2025 publication 'Clustering-based hard negative sampling for supervised contrastive speaker verification'"
+authors = [{ name = "Piotr Masztalski", email = "p.masztalski@samsung.com" }]
+readme = "README.md"
+license = { text = "MIT" }
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
