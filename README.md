@@ -3,6 +3,10 @@
 This repository contains the training source code for experiments from the Interspeech 2025 publication "Clustering-based hard negative sampling for supervised contrastive speaker verification"
 
 <p align="center">
+  <a href="https://arxiv.org/abs/2507.17540" style="font-size:20px;">Full Paper</a>
+</p>
+
+<p align="center">
   <img src="resources/media/CHNS_Interspeech_poster.jpg" alt="Interspeech 2025 poster" width="300">
 </p>
 
@@ -75,4 +79,18 @@ python run_test.py --config configs/chns.yaml
 ```
 
 Remember to specify the proper test data paths in the config file.
+
+---
+
+## Citation
+If you find this work useful, please cite:
+
+```bibtex
+@article{masztalski2025clustering,
+  title={Clustering-based hard negative sampling for supervised contrastive speaker verification},
+  author={Masztalski, Piotr and Romaniuk, Michał and Żak, Jakub and Matuszewski, Mateusz and Kowalczyk, Konrad},
+  journal={arXiv preprint arXiv:2507.17540},
+  year={2025}
+}
+```
 
