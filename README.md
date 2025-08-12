@@ -2,6 +2,10 @@
 
 This repository contains the training source code for experiments from the Interspeech 2025 publication "Clustering-based hard negative sampling for supervised contrastive speaker verification"
 
+<p align="center">
+  <img src="resources/media/CHNS_Interspeech_poster.jpg" alt="Interspeech 2025 poster" width="300">
+</p>
+
 ## Updates
 
 **04.07.2025**: Release a WIP version of the repo. No training configs included.
