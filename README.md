@@ -12,6 +12,9 @@ This repository contains the training source code for experiments from the Inter
 
 ## Updates
 
+**TODO**: Add dataset preparation guide to readme.
+
+**12.08.2025**: Added training configs and poster.  
 **04.07.2025**: Release a WIP version of the repo. No training configs included.
 
 ## Setup
@@ -42,7 +45,7 @@ pip install -e .
 
 ## Train
 
-This project uses `lightning` and specifically `LightningCLI` for configuration management. Each experiment setup should be defined in a separate `.yml` file. The arguments can be overridden from the command line.
+This project uses `lightning` and specifically `LightningCLI` for configuration management. Each experiment setup should be defined in a separate `.yaml` file. The arguments can be overridden from the command line.
 
 To run the training script of the base SupCon model run:
 

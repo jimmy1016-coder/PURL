@@ -1,0 +1,129 @@
+trainer:
+  max_epochs: 200
+  num_sanity_val_steps: 0
+  check_val_every_n_epoch: 1
+  devices: 1
+  accelerator: gpu
+  strategy: auto
+  logger:
+    class_path: lightning.pytorch.loggers.tensorboard.TensorBoardLogger
+    init_args:
+      save_dir: outputs/chns # SET YOUR EXPERIMENT LOGGING DIR
+      name: null
+      version: ""
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        filename: "{epoch}_{step}"
+        every_n_epochs: 5
+        save_top_k: -1
+        save_on_train_epoch_end: True
+        save_last: True
+        enable_version_counter: False
+model:
+  class_path: trainers.SupConTrainer
+  init_args:
+    loss_func:
+      class_path: losses.SupConLoss
+      init_args:
+        temperature: 0.1
+        learn_temperature: True
+        margin: 0.0
+    encoder:
+      class_path: models.ECAPAEncoder
+      init_args:
+        input_size: 80
+        channels:
+        - 256
+        - 256
+        - 256
+        - 256
+        - 768
+        kernel_sizes:
+        - 5
+        - 3
+        - 3
+        - 3
+        - 1
+        dilations:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 1
+        attention_channels: 128
+        lin_neurons: 192
+        res2net_scale: 8
+        se_channels: 128
+    projector:
+      class_path: models.IdentityProjector
+    clustering_model: # These configuration is applicable only for offline clustering calculation using the run_clustering.py script. Clusters used during training are loaded from a file.
+      class_path: sklearn.cluster.KMeans
+      init_args:
+        n_clusters: 50
+        random_state: 0
+        n_init: 5
+    learning_rate: 0.01
+    optim_weight_decay: 2e-06
+    lr_scheduler_type: cosine
+    sample_rate: ${data.init_args.train_config.sample_rate}
+    samples_per_epoch: ${data.init_args.train_config.samples_per_epoch}
+    batch_size: ${data.init_args.train_config.batch_size}
+data:
+  class_path: data.VoxCelebSupConDataModule
+  init_args:
+    train_config:
+      data_dir: path/to/VoxCeleb/vox2_dev_wav/wav  # provide path
+      spk2utt_file_path: path/to/VoxCeleb/vox2_dev_wav/wav/spk2utt  # provide path
+      wav_processor: torch.nn.Identity
+      feature_extractor:
+        class_path: data.feature_extractors.SBFbank
+        init_args:
+          sample_rate: ${data.init_args.train_config.sample_rate}
+          f_min: 0
+          f_max: 8000
+          n_fft: 400
+          n_mels: 80
+          win_length: 400
+          hop_length: 160
+          postprocessor: data.augmentations.SpecNormalization
+      sample_rate: 16_000
+      segment_length: 48_000
+      samples_per_epoch: 1_000_000
+      batch_size: 1300 # effective batch_size is 2x larger
+      num_workers: 12
+    valid_config:
+      data_dir: path/to/VoxCeleb/vox2_dev_wav/wav  # provide path
+      trials_file_path: resources/vox2_valid_pairs.txt
+      feature_extractor: ${data.init_args.train_config.feature_extractor}
+      sample_rate: ${data.init_args.train_config.sample_rate}
+      segment_length: null
+      batch_size: 1
+      num_workers: ${data.init_args.train_config.num_workers}
+    test_config:
+      data_dir: path/to/VoxCeleb/vox1_test_wav/wav  # provide path
+      trials_file_path: path/to/VoxCeleb/meta/list_test_hard2.txt  # provide path
+      feature_extractor: ${data.init_args.train_config.feature_extractor}
+      sample_rate: ${data.init_args.train_config.sample_rate}
+      segment_length: null
+      batch_size: 1
+      num_workers: ${data.init_args.train_config.num_workers}
+    clustering_config:
+      data_dir: path/to/VoxCeleb/vox2_dev_wav/wav  # provide path
+      spk2utt_file_path: path/to/VoxCeleb/vox2_dev_wav/wav/spk2utt  # provide path
+      wav_processor: ${data.init_args.train_config.wav_processor}
+      feature_extractor: ${data.init_args.train_config.feature_extractor}
+      sample_rate: ${data.init_args.train_config.sample_rate}
+      segment_length: 48_000
+      files_per_speaker: 10
+      batch_size: 1
+      num_workers: ${data.init_args.train_config.num_workers}
+    batch_sampler_config:
+      cluster_dict_path: outputs/chns/clusters_k50_epoch2.pkl # provide path
+      hard_ratio: 1.0
+      allow_repeat_speakers: False
+      allow_multi_cluster: True
+      sample_unique_rest: True

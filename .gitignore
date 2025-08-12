@@ -111,5 +111,5 @@ env/
 # Local project config
 *.local
 
-configs
+configs_local
 outputs
