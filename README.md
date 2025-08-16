@@ -12,7 +12,7 @@ This repository contains the training source code for experiments from the Inter
 
 ## Updates
 
-**16.08.2025**: Added dataset preparation guide to readme.
+**16.08.2025**: Added dataset preparation guide to readme.  
 **12.08.2025**: Added training configs and poster.  
 **04.07.2025**: Release a WIP version of the repo. No training configs included.
 
