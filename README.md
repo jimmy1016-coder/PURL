@@ -125,11 +125,14 @@ Remember to specify the proper test data paths in the config file.
 If you find this work useful, please cite:
 
 ```bibtex
-@article{masztalski2025_chns,
-  title={Clustering-based hard negative sampling for supervised contrastive speaker verification},
-  author={Masztalski, Piotr and Romaniuk, Michał and Żak, Jakub and Matuszewski, Mateusz and Kowalczyk, Konrad},
-  journal={arXiv preprint arXiv:2507.17540},
-  year={2025}
+@inproceedings{masztalski25_chns,
+  title     = {{Clustering-based Hard Negative Sampling for Supervised Contrastive Speaker Verification}},
+  author    = {{Piotr Masztalski and Michał Romaniuk and Jakub Żak and Mateusz Matuszewski and Konrad Kowalczyk}},
+  year      = {{2025}},
+  booktitle = {{Interspeech 2025}},
+  pages     = {{3698--3702}},
+  doi       = {{10.21437/Interspeech.2025-442}},
+  issn      = {{2958-1796}},
 }
 ```
 
