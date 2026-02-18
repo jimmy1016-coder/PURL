@@ -68,7 +68,14 @@ class WavAddNoise(nn.Module):
         clean_audio_max = torch.max(torch.abs(audio))
 
         file = random.choice(self.files)
-        noise, sr = torchaudio.load(file, channels_first=True, backend="soundfile")
+        try:
+            noise, sr = torchaudio.load(file, channels_first=True, backend="soundfile")
+        except Exception as e:
+            # Try with sox backend as fallback if soundfile fails
+            try:
+                noise, sr = torchaudio.load(file, channels_first=True, backend="sox")
+            except Exception as e2:
+                raise RuntimeError(f"Failed to load noise file: {file}. Soundfile error: {e}, Sox error: {e2}")
         # make sure audio is mono
         noise = noise.mean(dim=0, keepdim=True)
 

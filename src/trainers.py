@@ -6,6 +6,7 @@ import lightning.pytorch as pl
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import transformers
 from torchmetrics import Accuracy, F1Score, MetricCollection, Precision, Recall
 from sklearn.cluster import KMeans
@@ -324,6 +325,249 @@ class SupConTrainer(SupervisedTrainer):
             )
 
         return loss
+
+
+class NCUTrainer(SupervisedTrainer):
+    """Noisy Correspondence Unlearning Trainer.
+
+    매 에폭 시작 시 현재 모델로 전체 embedding을 추출하고,
+    화자별 GMM으로 clean/noisy pair를 판별한 뒤,
+    ncu_loss_type에 따라 다른 전략으로 학습한다.
+
+    ncu_loss_type:
+        "hard": clean/noisy를 threshold(0.5) 기준으로 이분화.
+                Clean → SupCon, Noisy → cosine repulsion.
+        "soft": GMM posterior p_clean을 soft weight로 사용.
+                Confident clean → SupCon, 모든 pair → (1-p_clean) weighted repulsion.
+    """
+
+    def __init__(
+        self,
+        encoder,
+        projector,
+        loss_func: nn.Module,
+        learning_rate: float,
+        lr_scheduler_type: str,
+        sample_rate: int,
+        alpha: float = 0.1,
+        ncu_loss_type: str = "hard",
+        ncu_clean_threshold: float = 0.5,
+        ncu_labels_path: str = None,
+        ncu_data_dir: str = "",
+        ncu_spk2utt_file_path: str = "",
+        ncu_gmm_every_n_epochs: int = 1,
+        ncu_batch_size: int = 64,
+        ncu_num_workers: int = 4,
+        optim_weight_decay: float = None,
+        samples_per_epoch: int = None,
+        batch_size: int = None,
+        clustering_model=None,
+    ):
+        super().__init__(
+            encoder=encoder,
+            projector=projector,
+            loss_func=loss_func,
+            learning_rate=learning_rate,
+            lr_scheduler_type=lr_scheduler_type,
+            sample_rate=sample_rate,
+            optim_weight_decay=optim_weight_decay,
+            samples_per_epoch=samples_per_epoch,
+            batch_size=batch_size,
+            clustering_model=clustering_model,
+        )
+        assert ncu_loss_type in ("hard", "soft"), f"Unknown ncu_loss_type: {ncu_loss_type}"
+        self.alpha = alpha
+        self.ncu_loss_type = ncu_loss_type
+        self.ncu_clean_threshold = ncu_clean_threshold
+        self.ncu_labels_path = ncu_labels_path
+        self.ncu_data_dir = ncu_data_dir
+        self.ncu_spk2utt_file_path = ncu_spk2utt_file_path
+        self.ncu_gmm_every_n_epochs = ncu_gmm_every_n_epochs
+        self.ncu_batch_size = ncu_batch_size
+        self.ncu_num_workers = ncu_num_workers
+
+    def on_train_epoch_start(self):
+        """에폭 시작 시 현재 모델로 clean/noisy labels를 재생성한다.
+
+        - 시작 에폭(0 또는 200 등): 무조건 GMM fitting
+        - 이후: ncu_gmm_every_n_epochs 주기마다 수행 (예: 30이면 200 → 230 → 260 ...)
+        """
+        if not hasattr(self, "_ncu_gmm_start_epoch"):
+            self._ncu_gmm_start_epoch = self.current_epoch
+
+        start = self._ncu_gmm_start_epoch
+        ep = self.current_epoch
+        n = self.ncu_gmm_every_n_epochs
+
+        is_start_epoch = ep == start
+        is_periodic = ep > start and (ep - start) % n == 0
+
+        if not is_start_epoch and not is_periodic:
+            next_update = start + ((ep - start) // n + 1) * n
+            print(f"[NCU] Epoch {ep}: Skipping GMM fitting (next at epoch {next_update})", flush=True)
+            return
+
+        import ncu_utils
+        from data.data_utils import load_spk2utt
+
+        reason = "start epoch" if is_start_epoch else f"periodic (every {n} epochs)"
+        print(f"\n[NCU] Epoch {ep}: Updating clean/noisy labels ({reason})...", flush=True)
+
+        spk2utt = load_spk2utt(self.ncu_spk2utt_file_path)
+
+        # 1. 현재 모델로 전체 embedding 추출
+        self.encoder.eval()
+        embeddings_dict = ncu_utils.extract_all_embeddings(
+            encoder=self.encoder,
+            spk2utt=spk2utt,
+            data_dir=self.ncu_data_dir,
+            device=self.device,
+            batch_size=self.ncu_batch_size,
+            num_workers=self.ncu_num_workers,
+        )
+        self.encoder.train()
+
+        # 2. 화자별 GMM fit
+        gmm_dict = ncu_utils.fit_per_speaker_gmm(spk2utt, embeddings_dict)
+
+        # 3. Pickle로 저장 (덮어쓰기)
+        ncu_utils.save_ncu_labels(self.ncu_labels_path, embeddings_dict, gmm_dict)
+
+        # 통계 로그
+        n_speakers_with_gmm = sum(1 for v in gmm_dict.values() if v is not None)
+        print(f"[NCU] GMM fitted for {n_speakers_with_gmm}/{len(gmm_dict)} speakers")
+        print(f"[NCU] Labels saved to {self.ncu_labels_path}")
+
+        # Dataset에 labels reload 트리거
+        try:
+            train_dl = self.trainer.train_dataloader
+            if train_dl is not None:
+                dataset = train_dl.dataset
+                if hasattr(dataset, '_load_ncu_labels'):
+                    dataset._load_ncu_labels()
+                    print("[NCU] Dataset labels reloaded in main process")
+        except Exception as e:
+            print(f"[NCU] Warning: Could not reload dataset labels: {e}")
+
+    def _log_audio(self, audios, prefix):
+        audio1 = audios[0, 0]
+        audio2 = audios[0, 1]
+
+        self.logger.experiment.add_audio(
+            f"{prefix}/audio1",
+            audio1.to("cpu"),
+            self.global_step,
+            self.sample_rate,
+        )
+        self.logger.experiment.add_audio(
+            f"{prefix}/audio2",
+            audio2.to("cpu"),
+            self.global_step,
+            self.sample_rate,
+        )
+
+    def training_step(self, batch):
+        features, audios, labels, p_clean = batch
+
+        if self.global_step < 5 and self.global_rank == 0:
+            self._log_audio(audios, "train")
+
+        features1 = features[:, 0]
+        features2 = features[:, 1]
+
+        # Encoder forward (전체 배치, 한 번만)
+        embs = self.encoder(
+            torch.cat([features1, features2], dim=0)
+        )
+        embs = self.projector(embs)
+
+        emb1, emb2 = torch.split(embs, features.shape[0])
+
+        if self.ncu_loss_type == "hard":
+            loss, loss_clean_val, loss_noisy_val, n_clean, n_noisy = self._training_step_hard(
+                emb1, emb2, labels, p_clean, features.device
+            )
+        else:  # soft
+            loss, loss_clean_val, loss_noisy_val, n_clean, n_noisy = self._training_step_soft(
+                emb1, emb2, labels, p_clean, features.device
+            )
+
+        # Logging
+        batch_size = features.shape[0]
+        self.log("train/loss_total", float(loss.detach()), on_step=True, on_epoch=True, sync_dist=True, batch_size=batch_size)
+        self.log("train/loss_clean", loss_clean_val, on_step=True, on_epoch=True, sync_dist=True, batch_size=batch_size)
+        self.log("train/loss_noisy", loss_noisy_val, on_step=True, on_epoch=True, sync_dist=True, batch_size=batch_size)
+        self.log("train/n_clean", float(n_clean), on_step=True, on_epoch=True, sync_dist=True, batch_size=batch_size)
+        self.log("train/n_noisy", float(n_noisy), on_step=True, on_epoch=True, sync_dist=True, batch_size=batch_size)
+        self.log("train/clean_ratio", float(n_clean) / max(n_clean + n_noisy, 1), on_step=True, on_epoch=True, sync_dist=True, batch_size=batch_size)
+        self.log("train/alpha", self.alpha, on_step=False, on_epoch=True, sync_dist=True, batch_size=batch_size)
+
+        return loss
+
+    def _training_step_hard(self, emb1, emb2, labels, p_clean, device):
+        """Loss 2: Hard split — clean/noisy를 threshold 기준으로 이분화."""
+        clean_mask = (p_clean > self.ncu_clean_threshold)
+        noisy_mask = ~clean_mask
+
+        n_clean = clean_mask.sum().item()
+        n_noisy = noisy_mask.sum().item()
+
+        loss = torch.tensor(0.0, device=device, requires_grad=True)
+        loss_clean_val = 0.0
+        loss_noisy_val = 0.0
+
+        # Clean set → SupCon loss
+        if n_clean > 1:
+            loss_clean, metrics_clean = self.loss_func(
+                emb1[clean_mask].squeeze(1),
+                emb2[clean_mask].squeeze(1),
+                labels[clean_mask],
+            )
+            loss = loss + loss_clean
+            loss_clean_val = metrics_clean.get("loss", 0.0)
+
+        # Noisy set → pairwise cosine similarity 최소화
+        if n_noisy > 0:
+            emb1_noisy = F.normalize(emb1[noisy_mask].squeeze(1), dim=1)
+            emb2_noisy = F.normalize(emb2[noisy_mask].squeeze(1), dim=1)
+            noisy_sim = (emb1_noisy * emb2_noisy).sum(dim=1)
+            loss_noisy_repulsion = noisy_sim.mean()
+            loss = loss + self.alpha * loss_noisy_repulsion
+            loss_noisy_val = loss_noisy_repulsion.item()
+
+        return loss, loss_clean_val, loss_noisy_val, n_clean, n_noisy
+
+    def _training_step_soft(self, emb1, emb2, labels, p_clean, device):
+        """Loss 3: Soft weighting — p_clean을 연속 weight로 사용."""
+        clean_mask = (p_clean > self.ncu_clean_threshold)
+        w_noisy = (1.0 - p_clean)  # [batch_size], 0이면 확실한 clean, 1이면 확실한 noisy
+
+        n_clean = clean_mask.sum().item()
+        n_noisy = (~clean_mask).sum().item()
+
+        loss = torch.tensor(0.0, device=device, requires_grad=True)
+        loss_clean_val = 0.0
+        loss_noisy_val = 0.0
+
+        # Confident clean → SupCon loss (p_clean > threshold인 pair만)
+        if n_clean > 1:
+            loss_clean, metrics_clean = self.loss_func(
+                emb1[clean_mask].squeeze(1),
+                emb2[clean_mask].squeeze(1),
+                labels[clean_mask],
+            )
+            loss = loss + loss_clean
+            loss_clean_val = metrics_clean.get("loss", 0.0)
+
+        # 모든 pair → (1 - p_clean) weighted cosine repulsion
+        emb1_norm = F.normalize(emb1.squeeze(1), dim=1)
+        emb2_norm = F.normalize(emb2.squeeze(1), dim=1)
+        cos_sim = (emb1_norm * emb2_norm).sum(dim=1)  # [batch_size]
+        loss_noisy_repulsion = (w_noisy * cos_sim).mean()
+        loss = loss + self.alpha * loss_noisy_repulsion
+        loss_noisy_val = loss_noisy_repulsion.item()
+
+        return loss, loss_clean_val, loss_noisy_val, n_clean, n_noisy
 
 
 class ClassificationTrainer(SupervisedTrainer):

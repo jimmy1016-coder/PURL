@@ -98,7 +98,14 @@ class VoxCelebContrastiveDataset(Dataset):
 
     def __getitem__(self, index):
         filename = random.choice(self.all_filenames)
-        audio, sr = torchaudio.load(filename, channels_first=True, backend="soundfile")
+        try:
+            audio, sr = torchaudio.load(filename, channels_first=True, backend="soundfile")
+        except Exception as e:
+            # Try with sox backend as fallback if soundfile fails
+            try:
+                audio, sr = torchaudio.load(filename, channels_first=True, backend="sox")
+            except Exception as e2:
+                raise RuntimeError(f"Failed to load audio file: {filename}. Soundfile error: {e}, Sox error: {e2}")
 
         if sr != self.sample_rate:
             audio = F.resample(audio, orig_freq=sr, new_freq=self.sample_rate)
@@ -153,7 +160,15 @@ class VoxCelebSupConDataset(Dataset):
         return file1, file2, speaker_id
 
     def _load_and_preprocess_file(self, filename):
-        audio, sr = torchaudio.load(uri=self.data_dir / filename, channels_first=True, backend="soundfile")
+        filepath = self.data_dir / filename
+        try:
+            audio, sr = torchaudio.load(uri=filepath, channels_first=True, backend="soundfile")
+        except Exception as e:
+            # Try with sox backend as fallback if soundfile fails
+            try:
+                audio, sr = torchaudio.load(uri=filepath, channels_first=True, backend="sox")
+            except Exception as e2:
+                raise RuntimeError(f"Failed to load audio file: {filepath}. Soundfile error: {e}, Sox error: {e2}")
 
         if sr != self.sample_rate:
             audio = F.resample(audio, orig_freq=sr, new_freq=self.sample_rate)
@@ -200,6 +215,121 @@ class VoxCelebSupConDatasetForBatchSampler(VoxCelebSupConDataset):
         return stacked_features, stacked_audios, label
 
 
+class VoxCelebNCUDataset(VoxCelebSupConDataset):
+    """NCU (Noisy Correspondence Unlearning) 용 Dataset.
+
+    기존 VoxCelebSupConDataset을 상속하며, 매 에폭 갱신되는 pickle 파일에서
+    embedding + GMM 정보를 로드하여 pair의 clean/noisy를 판별한다.
+    반환값: (features, audios, label, is_clean)
+    """
+
+    def __init__(
+        self,
+        data_dir: str,
+        spk2utt_file_path: str,
+        valid_spk_ids: set,
+        wav_processor: nn.Module,
+        feature_extractor: nn.Module,
+        sample_rate: int,
+        segment_length: int,
+        samples_per_epoch: int,
+        ncu_labels_path: str,
+    ):
+        super().__init__(
+            data_dir=data_dir,
+            spk2utt_file_path=spk2utt_file_path,
+            valid_spk_ids=valid_spk_ids,
+            wav_processor=wav_processor,
+            feature_extractor=feature_extractor,
+            sample_rate=sample_rate,
+            segment_length=segment_length,
+            samples_per_epoch=samples_per_epoch,
+        )
+        self.ncu_labels_path = ncu_labels_path
+        self.embeddings_dict = {}
+        self.gmm_dict = {}
+        self._labels_loaded = False
+        self._pickle_mtime = None  # pickle 파일의 수정 시간을 추적
+
+    def _load_ncu_labels(self):
+        """Pickle 파일에서 NCU labels를 로드한다."""
+        import os
+        try:
+            from ncu_utils import load_ncu_labels
+            # 파일의 수정 시간 확인
+            current_mtime = os.path.getmtime(self.ncu_labels_path)
+            if self._labels_loaded and self._pickle_mtime == current_mtime:
+                return  # 이미 최신 버전 로드됨
+            self.embeddings_dict, self.gmm_dict = load_ncu_labels(self.ncu_labels_path)
+            self._labels_loaded = True
+            self._pickle_mtime = current_mtime
+        except (FileNotFoundError, OSError):
+            # 첫 에폭 시작 전에는 파일이 없을 수 있음 → 모두 clean으로 처리
+            self.embeddings_dict = {}
+            self.gmm_dict = {}
+            self._labels_loaded = False
+
+    def _ensure_labels_loaded(self):
+        """Lazy loading: __getitem__ 첫 호출 시 pickle을 로드한다.
+
+        persistent_workers=False일 때 매 에폭 worker가 재생성되므로,
+        이 시점에서 최신 pickle을 읽게 된다.
+        """
+        if not self._labels_loaded:
+            self._load_ncu_labels()
+
+    def _get_pair_p_clean(self, spk_id, file1, file2):
+        """두 파일의 embedding으로 clean 확률을 반환한다."""
+        if not self._labels_loaded:
+            return 1.0  # labels 미로드 시 모두 clean
+
+        emb1 = self.embeddings_dict.get(file1)
+        emb2 = self.embeddings_dict.get(file2)
+
+        if emb1 is None or emb2 is None:
+            return 1.0  # embedding 없으면 clean으로 처리
+
+        gmm_entry = self.gmm_dict.get(spk_id)
+
+        from ncu_utils import get_pair_p_clean
+        return get_pair_p_clean(gmm_entry, emb1, emb2)
+
+    def __getitem__(self, index):
+        self._ensure_labels_loaded()
+        file1, file2, spk_id = self._get_files()
+
+        features1, audio1 = self._load_and_preprocess_file(file1)
+        features2, audio2 = self._load_and_preprocess_file(file2)
+
+        stacked_features = torch.cat([features1, features2], dim=0)
+        stacked_audios = torch.cat([audio1, audio2], dim=0)
+
+        label = self.label_encoder[spk_id]
+        p_clean = self._get_pair_p_clean(spk_id, file1, file2)
+
+        return stacked_features, stacked_audios, label, p_clean
+
+
+class VoxCelebNCUDatasetForBatchSampler(VoxCelebNCUDataset):
+    """VoxCelebNCUDataset + batch sampler 호환 (speaker_id를 인자로 받음)."""
+
+    def _get_files_by_id(self, speaker_id):
+        speaker_files = self.spk2utt[speaker_id]
+        file1, file2 = np.random.choice(speaker_files, size=2, replace=False)
+        return file1, file2
+
+    def __getitem__(self, speaker_id):
+        self._ensure_labels_loaded()
+        file1, file2 = self._get_files_by_id(speaker_id)
+        features1, audio1 = self._load_and_preprocess_file(file1)
+        features2, audio2 = self._load_and_preprocess_file(file2)
+        stacked_features = torch.cat([features1, features2], dim=0)
+        stacked_audios = torch.cat([audio1, audio2], dim=0)
+        label = self.label_encoder[speaker_id]
+        p_clean = self._get_pair_p_clean(speaker_id, file1, file2)
+        return stacked_features, stacked_audios, label, p_clean
+
+
 class VoxCelebSupervisedDataset(Dataset):
     def __init__(
         self,
@@ -230,7 +360,15 @@ class VoxCelebSupervisedDataset(Dataset):
         return self.samples_per_epoch
 
     def _load_and_preprocess_file(self, filename):
-        audio, sr = torchaudio.load(uri=self.data_dir / filename, channels_first=True, backend="soundfile")
+        filepath = self.data_dir / filename
+        try:
+            audio, sr = torchaudio.load(uri=filepath, channels_first=True, backend="soundfile")
+        except Exception as e:
+            # Try with sox backend as fallback if soundfile fails
+            try:
+                audio, sr = torchaudio.load(uri=filepath, channels_first=True, backend="sox")
+            except Exception as e2:
+                raise RuntimeError(f"Failed to load audio file: {filepath}. Soundfile error: {e}, Sox error: {e2}")
 
         if sr != self.sample_rate:
             audio = F.resample(audio, orig_freq=sr, new_freq=self.sample_rate)
@@ -273,7 +411,16 @@ class VoxCelebEvalDataset(Dataset):
 
     def __getitem__(self, index):
         filename = self.paths[index]
-        audio, sr = torchaudio.load(uri=self.data_dir / filename, channels_first=True, backend="soundfile")
+        filepath = self.data_dir / filename
+        
+        try:
+            audio, sr = torchaudio.load(uri=filepath, channels_first=True, backend="soundfile")
+        except Exception as e:
+            # Try with sox backend as fallback if soundfile fails
+            try:
+                audio, sr = torchaudio.load(uri=filepath, channels_first=True, backend="sox")
+            except Exception as e2:
+                raise RuntimeError(f"Failed to load audio file: {filepath}. Soundfile error: {e}, Sox error: {e2}")
 
         if sr != self.sample_rate:
             audio = F.resample(audio, orig_freq=sr, new_freq=self.sample_rate)
@@ -325,7 +472,15 @@ class VoxCelebSingleSpeakerDataset(Dataset):
         return files
 
     def _load_and_preprocess_file(self, filename):
-        audio, sr = torchaudio.load(uri=self.data_dir / filename, channels_first=True, backend="soundfile")
+        filepath = self.data_dir / filename
+        try:
+            audio, sr = torchaudio.load(uri=filepath, channels_first=True, backend="soundfile")
+        except Exception as e:
+            # Try with sox backend as fallback if soundfile fails
+            try:
+                audio, sr = torchaudio.load(uri=filepath, channels_first=True, backend="sox")
+            except Exception as e2:
+                raise RuntimeError(f"Failed to load audio file: {filepath}. Soundfile error: {e}, Sox error: {e2}")
 
         if sr != self.sample_rate:
             audio = F.resample(audio, orig_freq=sr, new_freq=self.sample_rate)

@@ -1,0 +1,110 @@
+trainer:
+  max_epochs: 230  # 200 epoch pretrained + 50 epoch NCU fine-tuning
+  num_sanity_val_steps: 0
+  check_val_every_n_epoch: 1
+  limit_val_batches: 0 # Validation skip (0: skip, 1: run)
+  devices: 1
+  accelerator: gpu
+  strategy: auto
+  # Resume하려면: python run_train.py --config configs/ncu.yaml --ckpt_path outputs/supcon/checkpoints/epoch=199_step=333400.ckpt
+  logger:
+    - class_path: lightning.pytorch.loggers.tensorboard.TensorBoardLogger
+      init_args:
+        save_dir: outputs/ncu-Softloss-alpha0.5-5ep-resnet34
+        name: null
+        version: ""
+    - class_path: lightning.pytorch.loggers.WandbLogger
+      init_args:
+        project: interspeech
+        name: NCU-unlearning-supcon
+        save_dir: outputs/ncu-Softloss-alpha0.5-5ep-resnet34
+        log_model: false
+        tags: [ncu, unlearning, supcon, speaker-verification]
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        filename: "{epoch}_{step}"
+        every_n_epochs: 1
+        save_top_k: -1
+        save_on_train_epoch_end: True
+        save_last: True
+        enable_version_counter: False
+model:
+  class_path: trainers.NCUTrainer
+  init_args:
+    loss_func:
+      class_path: losses.SupConLoss
+      init_args:
+        temperature: 0.1
+        learn_temperature: True
+        margin: 0.0
+    encoder:
+      class_path: models.ResNetEncoder
+      init_args:
+        layers: [3, 4, 6, 3]  # ThinResnet34 구조
+        num_filters: [16, 32, 64, 128]
+        nOut: 192
+        encoder_type: SAP  
+    projector:
+      class_path: models.IdentityProjector
+    # NCU 전용 하이퍼파라미터
+    alpha: 0.5  # noisy loss 가중치 (pairwise cosine repulsion 세기 조절)
+    ncu_loss_type: soft  # "hard": binary split, "soft": p_clean soft weighting
+    ncu_clean_threshold: 0.5  # SupCon에 참여하는 confident clean 기준 (hard/soft 공통)
+    ncu_labels_path: outputs/ncu-Softloss-alpha0.5-5ep-resnet34/ncu_labels.pkl  # 매 에폭 덮어쓰기되는 pickle 경로
+    ncu_gmm_every_n_epochs: 30  # 몇 에폭마다 GMM fitting할지 (1이면 매 에폭)
+    ncu_data_dir: /home/sooyoung/interspeech/dev/aac
+    ncu_spk2utt_file_path: /home/sooyoung/interspeech/dev/aac/spk2utt
+    ncu_batch_size: 2048  # embedding 추출 시 배치 크기
+    ncu_num_workers: 8  # embedding 추출 시 워커 수
+    # 기존 학습 파라미터
+    learning_rate: 0.01
+    optim_weight_decay: 2e-06
+    lr_scheduler_type: cosine
+    sample_rate: ${data.init_args.train_config.sample_rate}
+    samples_per_epoch: ${data.init_args.train_config.samples_per_epoch}
+    batch_size: ${data.init_args.train_config.batch_size}
+data:
+  class_path: data.VoxCelebNCUDataModule
+  init_args:
+    train_config:
+      data_dir: /home/sooyoung/interspeech/dev/aac
+      spk2utt_file_path: /home/sooyoung/interspeech/dev/aac/spk2utt
+      ncu_labels_path: outputs/ncu-Softloss-alpha0.5-5ep-resnet34/ncu_labels.pkl
+      wav_processor: torch.nn.Identity
+      feature_extractor:
+        class_path: data.feature_extractors.SBFbank
+        init_args:
+          sample_rate: ${data.init_args.train_config.sample_rate}
+          f_min: 0
+          f_max: 8000
+          n_fft: 400
+          n_mels: 80
+          win_length: 400
+          hop_length: 160
+          postprocessor: data.augmentations.SpecNormalization
+      sample_rate: 16_000
+      segment_length: 48_000
+      samples_per_epoch: 1_000_000
+      batch_size: 600  # effective batch_size is 2x larger
+      num_workers: 8
+    valid_config:
+      data_dir: /home/sooyoung/interspeech/dev/aac
+      trials_file_path: resources/vox2_valid_pairs.txt
+      feature_extractor: ${data.init_args.train_config.feature_extractor}
+      sample_rate: ${data.init_args.train_config.sample_rate}
+      segment_length: null
+      batch_size: 1
+      num_workers: ${data.init_args.train_config.num_workers}
+    test_config:
+      data_dir: /home/sooyoung/interspeech/dev1
+      trials_file_path: /home/sooyoung/interspeech/dataset/list_test_hard2.txt
+      feature_extractor: ${data.init_args.train_config.feature_extractor}
+      sample_rate: ${data.init_args.train_config.sample_rate}
+      segment_length: null
+      batch_size: 1
+      num_workers: ${data.init_args.train_config.num_workers}
+    use_unique_batch_sampler: True

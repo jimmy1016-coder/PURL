@@ -13,7 +13,9 @@ from data import (
     VoxCelebSupConDatasetForBatchSampler,
     VoxCelebSupervisedDataset,
     VoxCelebEvalDataset,
-    VoxCelebSingleSpeakerDataset
+    VoxCelebSingleSpeakerDataset,
+    VoxCelebNCUDataset,
+    VoxCelebNCUDatasetForBatchSampler,
 )
 from data.feature_extractors import FeatureExtractor
 from data.data_utils import read_voxceleb_pairs_txt
@@ -37,6 +39,20 @@ class VoxCelebContrastiveSplitConfig:
 class VoxCelebSupConTrainDataConfig:
     data_dir: Path
     spk2utt_file_path: Path
+    wav_processor: nn.Module
+    feature_extractor: FeatureExtractor
+    sample_rate: int
+    segment_length: Optional[int]
+    samples_per_epoch: int
+    batch_size: int
+    num_workers: int
+
+
+@dataclass
+class VoxCelebNCUTrainDataConfig:
+    data_dir: Path
+    spk2utt_file_path: Path
+    ncu_labels_path: str
     wav_processor: nn.Module
     feature_extractor: FeatureExtractor
     sample_rate: int
@@ -364,3 +380,108 @@ class VoxCelebSupervisedDataModule(pl.LightningDataModule):
         )
 
         return dataloader
+
+
+class VoxCelebNCUDataModule(pl.LightningDataModule):
+    """NCU (Noisy Correspondence Unlearning) 전용 DataModule.
+
+    VoxCelebSupConDataModule과 유사하지만, train dataloader에서
+    VoxCelebNCUDataset을 사용하여 clean/noisy flag을 함께 반환한다.
+    """
+
+    def __init__(
+        self,
+        train_config: VoxCelebNCUTrainDataConfig,
+        valid_config: VoxCelebEvalDataConfig,
+        test_config: VoxCelebEvalDataConfig,
+        clustering_config: Optional[VoxCelebClusteringDataConfig] = None,
+        use_unique_batch_sampler: bool = False,
+    ):
+        super().__init__()
+        self.train_config = train_config
+        self.valid_config = valid_config
+        self.test_config = test_config
+        self.clustering_config = clustering_config
+        self.use_unique_batch_sampler = use_unique_batch_sampler
+
+        _, files1, files2 = read_voxceleb_pairs_txt(valid_config.trials_file_path)
+        valid_file_paths = np.unique(np.concatenate((files1, files2)))
+        self.valid_spk_ids = {p.split("/")[-3] for p in valid_file_paths}
+
+    def train_dataloader(self):
+        if self.use_unique_batch_sampler:
+            return self._create_train_dataloader_with_batch_sampler()
+        return self._create_train_dataloader_default()
+
+    def _create_train_dataloader_with_batch_sampler(self):
+        dataset = VoxCelebNCUDatasetForBatchSampler(
+            data_dir=self.train_config.data_dir,
+            spk2utt_file_path=self.train_config.spk2utt_file_path,
+            valid_spk_ids=self.valid_spk_ids,
+            wav_processor=self.train_config.wav_processor,
+            feature_extractor=self.train_config.feature_extractor,
+            sample_rate=self.train_config.sample_rate,
+            segment_length=self.train_config.segment_length,
+            samples_per_epoch=self.train_config.samples_per_epoch,
+            ncu_labels_path=self.train_config.ncu_labels_path,
+        )
+        batch_sampler = UniqueBatchSampler(
+            spk2utt_file_path=self.train_config.spk2utt_file_path,
+            valid_spk_ids=self.valid_spk_ids,
+            batch_size=self.train_config.batch_size // 2,
+            steps_per_epoch=math.ceil(
+                self.train_config.samples_per_epoch / self.train_config.batch_size
+            ),
+        )
+        return DataLoader(
+            dataset=dataset,
+            batch_sampler=batch_sampler,
+            num_workers=self.train_config.num_workers,
+            pin_memory=True,
+            persistent_workers=False,
+        )
+
+    def _create_train_dataloader_default(self):
+        dataset = VoxCelebNCUDataset(
+            data_dir=self.train_config.data_dir,
+            spk2utt_file_path=self.train_config.spk2utt_file_path,
+            valid_spk_ids=self.valid_spk_ids,
+            wav_processor=self.train_config.wav_processor,
+            feature_extractor=self.train_config.feature_extractor,
+            sample_rate=self.train_config.sample_rate,
+            segment_length=self.train_config.segment_length,
+            samples_per_epoch=self.train_config.samples_per_epoch // 2,
+            ncu_labels_path=self.train_config.ncu_labels_path,
+        )
+
+        dataloader = DataLoader(
+            dataset=dataset,
+            batch_size=self.train_config.batch_size // 2,
+            num_workers=self.train_config.num_workers,
+            pin_memory=True,
+            persistent_workers=False,  # 매 에폭마다 worker 재생성 → 최신 pickle 반영
+        )
+
+        return dataloader
+
+    def _create_eval_dataloader(self, config: VoxCelebEvalDataConfig):
+        dataset = VoxCelebEvalDataset(
+            data_dir=config.data_dir,
+            pairs_txt_file=config.trials_file_path,
+            processor=config.feature_extractor,
+            sample_rate=config.sample_rate,
+            segment_length=config.segment_length,
+        )
+        dataloader = DataLoader(
+            dataset=dataset,
+            batch_size=config.batch_size,
+            num_workers=config.num_workers,
+            pin_memory=True,
+        )
+        return dataloader
+
+    def val_dataloader(self):
+        return self._create_eval_dataloader(self.valid_config)
+
+    def test_dataloader(self):
+        return self._create_eval_dataloader(self.test_config)

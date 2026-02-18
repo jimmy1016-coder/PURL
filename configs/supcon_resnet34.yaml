@@ -1,23 +1,27 @@
 trainer:
-  max_epochs: 200
+  max_epochs: 230
   num_sanity_val_steps: 0
   check_val_every_n_epoch: 1
+  limit_val_batches: 0  # Validation skip (0: skip, 1: run)
   devices: 1
   accelerator: gpu
   strategy: auto
+  # ckpt_path는 trainer 인자가 아님. resume은 run_train.py가 자동으로 last.ckpt를 찾아서 처리함.
+  # 특정 체크포인트에서 resume하려면 아래처럼 실행:
+  #   python run_train.py --config configs/supcon.yaml --ckpt_path /path/to/checkpoint.ckpt
   logger:
     - class_path: lightning.pytorch.loggers.tensorboard.TensorBoardLogger
       init_args:
-        save_dir: outputs/hscl # SET YOUR EXPERIMENT LOGGING DIR
+        save_dir: outputs/supcon_resnet34 # SET YOUR EXPERIMENT LOGGING DIR
         name: null
         version: ""
     - class_path: lightning.pytorch.loggers.WandbLogger
       init_args:
         project: interspeech  # wandb project name
-        name: Reproduce-hscl  # will use experiment name from config or auto-generate
-        save_dir: outputs/hscl-real_reproduce  # local directory for wandb files
+        name: Reproduce-supcon-voxceleb2_train  # will use experiment name from config or auto-generate
+        save_dir: outputs/supcon_resnet34  # local directory for wandb files
         log_model: false  # set to true if you want to save model checkpoints to wandb
-        tags: [hscl, speaker-verification]  # optional tags for organizing experiments
+        tags: [supcon, speaker-verification]  # optional tags for organizing experiments
   callbacks:
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
@@ -25,7 +29,7 @@ trainer:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         filename: "{epoch}_{step}"
-        every_n_epochs: 5
+        every_n_epochs: 1
         save_top_k: -1
         save_on_train_epoch_end: True
         save_last: True
@@ -34,38 +38,18 @@ model:
   class_path: trainers.SupConTrainer
   init_args:
     loss_func:
-      class_path: losses.HSCLLoss
+      class_path: losses.SupConLoss
       init_args:
         temperature: 0.1
         learn_temperature: True
-        beta: 0.1
-        normalize_features: True
+        margin: 0.0
     encoder:
-      class_path: models.ECAPAEncoder
+      class_path: models.ResNetEncoder
       init_args:
-        input_size: 80
-        channels:
-        - 256
-        - 256
-        - 256
-        - 256
-        - 768
-        kernel_sizes:
-        - 5
-        - 3
-        - 3
-        - 3
-        - 1
-        dilations:
-        - 1
-        - 2
-        - 3
-        - 4
-        - 1
-        attention_channels: 128
-        lin_neurons: 192
-        res2net_scale: 8
-        se_channels: 128
+        layers: [3, 4, 6, 3]  # ThinResnet34 구조
+        num_filters: [16, 32, 64, 128]
+        nOut: 192
+        encoder_type: SAP  
     projector:
       class_path: models.IdentityProjector
     clustering_model: # These configuration is applicable only for offline clustering calculation using the run_clustering.py script. Clusters used during training are loaded from a file.
@@ -84,8 +68,8 @@ data:
   class_path: data.VoxCelebSupConDataModule
   init_args:
     train_config:
-      data_dir: /home/sooyoung/interspeech/dev/aac  # provide path
-      spk2utt_file_path: /home/sooyoung/interspeech/dev/aac/spk2utt  # provide path
+      data_dir: /home/sooyoung/interspeech/dev/aac #path/to/VoxCeleb/vox2_dev_wav/wav  # provide path
+      spk2utt_file_path: /home/sooyoung/interspeech/dev/aac/spk2utt  #path/to/VoxCeleb/vox2_dev_wav/wav/spk2utt  # provide path
       wav_processor: torch.nn.Identity
       feature_extractor:
         class_path: data.feature_extractors.SBFbank
@@ -100,11 +84,11 @@ data:
           postprocessor: data.augmentations.SpecNormalization
       sample_rate: 16_000
       segment_length: 48_000
-      samples_per_epoch: 1_000_000
+      samples_per_epoch: 1_000_000 #800_000 # 원래는 1_000_000
       batch_size: 600 # effective batch_size is 2x larger
-      num_workers: 4
+      num_workers: 8
     valid_config:
-      data_dir: /home/sooyoung/interspeech/dev/aac  # provide path
+      data_dir: /home/sooyoung/interspeech/dev/aac # provide path
       trials_file_path: resources/vox2_valid_pairs.txt
       feature_extractor: ${data.init_args.train_config.feature_extractor}
       sample_rate: ${data.init_args.train_config.sample_rate}
@@ -112,8 +96,8 @@ data:
       batch_size: 1
       num_workers: ${data.init_args.train_config.num_workers}
     test_config:
-      data_dir: /home/sooyoung/interspeech/dev1  # provide path
-      trials_file_path: /home/sooyoung/interspeech/dataset/list_test_hard2.txt  # provide path
+      data_dir: /home/sooyoung/interspeech/dev1 ##path/to/VoxCeleb/vox1_test_wav/wav  # provide path
+      trials_file_path: /home/sooyoung/interspeech/dataset/list_test_hard2.txt ##path/to/VoxCeleb/meta/list_test_hard2.txt  # provide path
       feature_extractor: ${data.init_args.train_config.feature_extractor}
       sample_rate: ${data.init_args.train_config.sample_rate}
       segment_length: null
@@ -121,7 +105,7 @@ data:
       num_workers: ${data.init_args.train_config.num_workers}
     clustering_config:
       data_dir: /home/sooyoung/interspeech/dev/aac  # provide path
-      spk2utt_file_path: /home/sooyoung/interspeech/dev/aac/spk2utt  # provide path
+      spk2utt_file_path: /home/sooyoung/interspeech/dev/aac/spk2utt  #path/to/VoxCeleb/vox2_dev_wav/wav/spk2utt  # provide path
       wav_processor: ${data.init_args.train_config.wav_processor}
       feature_extractor: ${data.init_args.train_config.feature_extractor}
       sample_rate: ${data.init_args.train_config.sample_rate}

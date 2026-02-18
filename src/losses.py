@@ -23,7 +23,7 @@ def contrastive_top_one_accuracy_with_ids(similarity_matrix, speaker_ids):
     assert similarity_matrix.size(0) == similarity_matrix.size(1)
 
     sim_mx_masked = torch.clone(similarity_matrix)
-    r = torch.arange(sim_mx_masked.size(0))
+    r = torch.arange(sim_mx_masked.size(0), device=similarity_matrix.device)
     sim_mx_masked[r, r] = -torch.inf
 
     where_max = sim_mx_masked.argmax(1)
@@ -116,7 +116,8 @@ class SupConLoss(nn.Module):
         if learn_temperature:
             self.temperature = nn.Parameter(torch.tensor(temperature))
         else:
-            self.temperature = torch.tensor(temperature)
+            # Register as buffer so it moves with the module to the correct device
+            self.register_buffer('temperature', torch.tensor(temperature))
 
         self.margin = margin
 
@@ -140,7 +141,7 @@ class SupConLoss(nn.Module):
 
         batch_size = features.shape[0]
 
-        if labels.any():
+        if labels is not None and labels.numel() > 0:
             speaker_ids = labels.contiguous().view(-1, 1)
             if speaker_ids.shape[0] != batch_size:
                 raise ValueError('Num of speaker_ids does not match num of features')
@@ -148,7 +149,7 @@ class SupConLoss(nn.Module):
         else:
             mask = torch.eye(batch_size, dtype=torch.float32).to(device)
 
-        contrast_count = features.shape[1]
+        contrast_count   = features.shape[1]
         contrast_feature = torch.cat(torch.unbind(features, dim=1), dim=0)
         contrast_feature = F.normalize(contrast_feature, dim=1)
 
@@ -159,7 +160,7 @@ class SupConLoss(nn.Module):
         pairwise_cos = torch.matmul(anchor_feature, contrast_feature.T)
 
         if self.margin > 0:
-            r = torch.arange(2 * batch_size)
+            r = torch.arange(2 * batch_size, device=device)
             pairwise_cos[r, (r + batch_size) % (2 * batch_size)] -= self.margin
 
         anchor_dot_contrast = pairwise_cos / self.temperature
@@ -171,12 +172,10 @@ class SupConLoss(nn.Module):
         # tile mask
         mask = mask.repeat(anchor_count, contrast_count)
         # mask-out self-contrast cases
-        logits_mask = torch.scatter(
-            torch.ones_like(mask),
-            1,
-            torch.arange(batch_size * anchor_count).view(-1, 1).to(device),
-            0
-        )
+        # Use indexing instead of scatter to avoid CUDA engine issues
+        logits_mask = torch.ones_like(mask)
+        diag_indices = torch.arange(batch_size * anchor_count, device=device)
+        logits_mask[diag_indices, diag_indices] = 0
         mask = mask * logits_mask
 
         # compute log_prob
@@ -184,27 +183,36 @@ class SupConLoss(nn.Module):
         log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
 
         # compute mean of log-likelihood over positive
-        mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
+        mask_sum = mask.sum(1)
+        # Avoid division by zero - clamp to prevent numerical issues
+        mask_sum = torch.clamp(mask_sum, min=1e-8)
+        mean_log_prob_pos = (mask * log_prob).sum(1) / mask_sum
 
         # loss
         loss = -1 * mean_log_prob_pos
         loss = loss.view(anchor_count, batch_size).mean()
 
         with torch.no_grad():
-            unique_spk_ids, unique_counts = torch.unique(labels, return_counts=True)
-            num_repeating_speakers = torch.sum(unique_counts > 1)
-            # contrastive_accuracy() works on two matched batches so a subset of the combined similarity matrix
-            # is required
-            contr_acc = contrastive_top_one_accuracy_with_ids(anchor_dot_contrast, labels.repeat(2))
-            contr_norm_acc = contr_acc ** (1 / (batch_size - 1))
+            if labels is not None and labels.numel() > 0:
+                unique_spk_ids, unique_counts = torch.unique(labels, return_counts=True)
+                num_repeating_speakers = torch.sum(unique_counts > 1)
+                # contrastive_accuracy() works on two matched batches so a subset of the combined similarity matrix
+                # is required
+                contr_acc = contrastive_top_one_accuracy_with_ids(anchor_dot_contrast, labels.repeat(2))
+                contr_norm_acc = contr_acc ** (1 / (batch_size - 1))
+            else:
+                num_repeating_speakers = torch.tensor(0, device=device)
+                contr_acc = torch.tensor(0.0, device=device)
+                contr_norm_acc = torch.tensor(0.0, device=device)
 
+            temp_value = self.temperature.detach() if isinstance(self.temperature, torch.Tensor) else torch.tensor(self.temperature, device=device)
             metrics = {
                 'loss': float(loss.detach()),
-                'contr_acc': contr_acc,
-                'contr_norm_acc': contr_norm_acc,
-                'contr_error_rate': 1.0 - contr_acc,
-                'loss_temperature': self.temperature.detach(),
-                'loss_num_repeating_speakers': num_repeating_speakers.detach(),
+                'contr_acc': float(contr_acc.detach()) if isinstance(contr_acc, torch.Tensor) else contr_acc,
+                'contr_norm_acc': float(contr_norm_acc.detach()) if isinstance(contr_norm_acc, torch.Tensor) else contr_norm_acc,
+                'contr_error_rate': 1.0 - (float(contr_acc.detach()) if isinstance(contr_acc, torch.Tensor) else contr_acc),
+                'loss_temperature': float(temp_value.item()) if isinstance(temp_value, torch.Tensor) else temp_value,
+                'loss_num_repeating_speakers': float(num_repeating_speakers.detach()) if isinstance(num_repeating_speakers, torch.Tensor) else num_repeating_speakers,
             }
 
         return loss, metrics
