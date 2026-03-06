@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -23,6 +25,20 @@ def crop_or_pad(audio: torch.Tensor, segment_length: int):
         output = audio
 
     return output
+
+
+def extract_speaker_ids_from_paths(file_paths):
+    """Extract speaker IDs from file paths. Handles both VoxCeleb (3+ path levels)
+    and CN-Celeb (2 levels: enroll/id00800-enroll.flac, test/id00800-xxx.flac)."""
+    ids = set()
+    for p in file_paths:
+        parts = str(p).split("/")
+        if len(parts) >= 3:
+            ids.add(parts[-3])  # VoxCeleb: .../speaker_id/session/file
+        else:
+            # CN-Celeb: enroll/id00800-enroll.flac -> id00800
+            ids.add(Path(p).stem.split("-")[0])
+    return ids
 
 
 def read_voxceleb_pairs_txt(pairs_txt_file):

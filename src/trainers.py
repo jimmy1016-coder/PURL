@@ -339,6 +339,7 @@ class NCUTrainer(SupervisedTrainer):
                 Clean → SupCon, Noisy → cosine repulsion.
         "soft": GMM posterior p_clean을 soft weight로 사용.
                 Confident clean → SupCon, 모든 pair → (1-p_clean) weighted repulsion.
+        "ascent": clean → SupCon, noisy → -SupCon (SupCon gradient ascent).
     """
 
     def __init__(
@@ -356,6 +357,8 @@ class NCUTrainer(SupervisedTrainer):
         ncu_data_dir: str = "",
         ncu_spk2utt_file_path: str = "",
         ncu_gmm_every_n_epochs: int = 1,
+        ncu_gmm_start_epoch: Optional[int] = None,
+        ncu_noisy_beta: float = 3.0,
         ncu_batch_size: int = 64,
         ncu_num_workers: int = 4,
         optim_weight_decay: float = None,
@@ -375,7 +378,7 @@ class NCUTrainer(SupervisedTrainer):
             batch_size=batch_size,
             clustering_model=clustering_model,
         )
-        assert ncu_loss_type in ("hard", "soft"), f"Unknown ncu_loss_type: {ncu_loss_type}"
+        assert ncu_loss_type in ("hard", "soft", "ascent"), f"Unknown ncu_loss_type: {ncu_loss_type}"
         self.alpha = alpha
         self.ncu_loss_type = ncu_loss_type
         self.ncu_clean_threshold = ncu_clean_threshold
@@ -383,17 +386,39 @@ class NCUTrainer(SupervisedTrainer):
         self.ncu_data_dir = ncu_data_dir
         self.ncu_spk2utt_file_path = ncu_spk2utt_file_path
         self.ncu_gmm_every_n_epochs = ncu_gmm_every_n_epochs
+        self.ncu_gmm_start_epoch = ncu_gmm_start_epoch
+        self.ncu_noisy_beta = ncu_noisy_beta
         self.ncu_batch_size = ncu_batch_size
         self.ncu_num_workers = ncu_num_workers
+
+    def state_dict(self):
+        state = super().state_dict()
+        if hasattr(self, "_ncu_gmm_start_epoch"):
+            state["_ncu_gmm_start_epoch"] = self._ncu_gmm_start_epoch
+        return state
+
+    def load_state_dict(self, state_dict, strict=True):
+        _ncu_gmm_start_epoch = state_dict.pop("_ncu_gmm_start_epoch", None)
+        super().load_state_dict(state_dict, strict=strict)
+        if _ncu_gmm_start_epoch is not None:
+            self._ncu_gmm_start_epoch = _ncu_gmm_start_epoch
 
     def on_train_epoch_start(self):
         """에폭 시작 시 현재 모델로 clean/noisy labels를 재생성한다.
 
         - 시작 에폭(0 또는 200 등): 무조건 GMM fitting
         - 이후: ncu_gmm_every_n_epochs 주기마다 수행 (예: 30이면 200 → 230 → 260 ...)
+        - Resume 시: _ncu_gmm_start_epoch가 체크포인트에 없으면
+          ncu_gmm_start_epoch(설정값) 또는 휴리스틱(>=200이면 200, 아니면 0) 사용
         """
         if not hasattr(self, "_ncu_gmm_start_epoch"):
-            self._ncu_gmm_start_epoch = self.current_epoch
+            if self.ncu_gmm_start_epoch is not None:
+                self._ncu_gmm_start_epoch = self.ncu_gmm_start_epoch
+            else:
+                # 기본 휴리스틱:
+                # - NCU fine-tuning (200부터 시작) 실험은 200을 기준으로 주기 계산
+                # - 일반 학습은 0 기준
+                self._ncu_gmm_start_epoch = 200 if self.current_epoch >= 200 else 0
 
         start = self._ncu_gmm_start_epoch
         ep = self.current_epoch
@@ -480,6 +505,8 @@ class NCUTrainer(SupervisedTrainer):
             torch.cat([features1, features2], dim=0)
         )
         embs = self.projector(embs)
+        embs = torch.nan_to_num(embs, nan=0.0, posinf=1e4, neginf=-1e4)
+        p_clean = torch.nan_to_num(p_clean.float(), nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
 
         emb1, emb2 = torch.split(embs, features.shape[0])
 
@@ -487,10 +514,18 @@ class NCUTrainer(SupervisedTrainer):
             loss, loss_clean_val, loss_noisy_val, n_clean, n_noisy = self._training_step_hard(
                 emb1, emb2, labels, p_clean, features.device
             )
-        else:  # soft
+        elif self.ncu_loss_type == "soft":
             loss, loss_clean_val, loss_noisy_val, n_clean, n_noisy = self._training_step_soft(
                 emb1, emb2, labels, p_clean, features.device
             )
+        else:  # ascent
+            loss, loss_clean_val, loss_noisy_val, n_clean, n_noisy = self._training_step_ascent(
+                emb1, emb2, labels, p_clean, features.device
+            )
+
+        if not torch.isfinite(loss):
+            print("[NCU] Warning: non-finite total loss detected. Using zero loss for this step.", flush=True)
+            loss = torch.zeros((), device=features.device, requires_grad=True)
 
         # Logging
         batch_size = features.shape[0]
@@ -567,6 +602,45 @@ class NCUTrainer(SupervisedTrainer):
         loss = loss + self.alpha * loss_noisy_repulsion
         loss_noisy_val = loss_noisy_repulsion.item()
 
+        return loss, loss_clean_val, loss_noisy_val, n_clean, n_noisy
+
+    def _training_step_ascent(self, emb1, emb2, labels, p_clean, device):
+        """Ablation: clean → SupCon, noisy → -SupCon (gradient ascent on SupCon objective)."""
+        clean_mask = (p_clean > self.ncu_clean_threshold)
+        noisy_mask = ~clean_mask
+
+        n_clean = clean_mask.sum().item()
+        n_noisy = noisy_mask.sum().item()
+
+        loss = torch.tensor(0.0, device=device, requires_grad=True)
+        loss_clean_val = 0.0
+        loss_noisy_val = 0.0
+
+        # Confident clean → SupCon loss
+        if n_clean > 1:
+            emb1_clean = torch.nan_to_num(emb1[clean_mask].squeeze(1), nan=0.0, posinf=1e4, neginf=-1e4)
+            emb2_clean = torch.nan_to_num(emb2[clean_mask].squeeze(1), nan=0.0, posinf=1e4, neginf=-1e4)
+            loss_clean, metrics_clean = self.loss_func(emb1_clean, emb2_clean, labels[clean_mask])
+            if torch.isfinite(loss_clean):
+                loss = loss + loss_clean
+                loss_clean_val = metrics_clean.get("loss", 0.0)
+            else:
+                print("[NCU] Warning: non-finite clean loss in ascent mode. Skipping clean term.", flush=True)
+
+        # Noisy set → -SupCon (gradient ascent: push apart what SupCon would pull together)
+        if n_noisy > 1:
+            emb1_noisy = torch.nan_to_num(emb1[noisy_mask].squeeze(1), nan=0.0, posinf=1e4, neginf=-1e4)
+            emb2_noisy = torch.nan_to_num(emb2[noisy_mask].squeeze(1), nan=0.0, posinf=1e4, neginf=-1e4)
+            labels_noisy = labels[noisy_mask]
+            loss_supcon_noisy, metrics_noisy = self.loss_func(emb1_noisy, emb2_noisy, labels_noisy)
+            loss_noisy_ascent = -loss_supcon_noisy
+            if torch.isfinite(loss_noisy_ascent):
+                loss = loss + self.alpha * loss_noisy_ascent
+                loss_noisy_val = float(metrics_noisy.get("loss", 0.0))
+            else:
+                print("[NCU] Warning: non-finite -SupCon noisy loss. Skipping noisy term.", flush=True)
+
+        loss = torch.nan_to_num(loss, nan=0.0, posinf=1e4, neginf=-1e4)
         return loss, loss_clean_val, loss_noisy_val, n_clean, n_noisy
 
 

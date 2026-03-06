@@ -5,6 +5,7 @@ import sys
 from setproctitle import setproctitle
 from lightning.pytorch.cli import LightningCLI
 from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.callbacks import ModelCheckpoint
 
 
 logger = logging.getLogger("lightning")
@@ -23,7 +24,19 @@ if __name__ == "__main__":
     If the output dir already exists and has a "last.ckpt" checkpoint,
     load this checkpoint and continue training.
     """
-    output_dir = Path(cli.trainer.logger.save_dir)
+    # 체크포인트 저장 경로: ModelCheckpoint callback의 dirpath 사용 (resume 경로와 일치해야 함)
+    ckpt_dir = None
+    for cb in cli.trainer.callbacks:
+        if isinstance(cb, ModelCheckpoint) and cb.dirpath is not None:
+            ckpt_dir = Path(cb.dirpath)
+            break
+    if ckpt_dir is None:
+        # fallback: 첫 번째 logger의 save_dir 사용
+        logger_obj = cli.trainer.logger
+        if isinstance(logger_obj, (list, tuple)):
+            logger_obj = logger_obj[0]
+        ckpt_dir = Path(logger_obj.save_dir) / "checkpoints"
+    output_dir = ckpt_dir.parent
     setproctitle(output_dir.name)
 
     # Configure wandb logger if present
@@ -82,7 +95,7 @@ if __name__ == "__main__":
         logger.info(f"Resuming training from checkpoint specified via --ckpt_path: {ckpt_load_path}")
     else:
         # Auto-resume: look for last.ckpt in checkpoints directory
-        last_ckpt_path = output_dir / "checkpoints" / "last.ckpt"
+        last_ckpt_path = ckpt_dir / "last.ckpt"
         if last_ckpt_path.is_file():
             logger.info(f"Auto-resuming: Loading existing training state from: {last_ckpt_path}")
             ckpt_load_path = str(last_ckpt_path)

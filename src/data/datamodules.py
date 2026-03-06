@@ -18,7 +18,7 @@ from data import (
     VoxCelebNCUDatasetForBatchSampler,
 )
 from data.feature_extractors import FeatureExtractor
-from data.data_utils import read_voxceleb_pairs_txt
+from data.data_utils import read_voxceleb_pairs_txt, extract_speaker_ids_from_paths
 from data.samplers import ClusterBatchSampler, UniqueBatchSampler
 
 
@@ -183,7 +183,7 @@ class VoxCelebSupConDataModule(pl.LightningDataModule):
 
         _, files1, files2 = read_voxceleb_pairs_txt(valid_config.trials_file_path)
         valid_file_paths = np.unique(np.concatenate((files1, files2)))
-        self.valid_spk_ids = {p.split("/")[-3] for p in valid_file_paths}
+        self.valid_spk_ids = extract_speaker_ids_from_paths(valid_file_paths)
 
     def _create_train_dataloader_with_batch_sampler(self):
         dataset = VoxCelebSupConDatasetForBatchSampler(
@@ -315,7 +315,7 @@ class VoxCelebSupervisedDataModule(pl.LightningDataModule):
 
         _, files1, files2 = read_voxceleb_pairs_txt(valid_config.trials_file_path)
         valid_file_paths = np.unique(np.concatenate((files1, files2)))
-        self.valid_spk_ids = {p.split("/")[-3] for p in valid_file_paths}
+        self.valid_spk_ids = extract_speaker_ids_from_paths(valid_file_paths)
 
     def train_dataloader(self):
         dataset = VoxCelebSupervisedDataset(
@@ -406,7 +406,7 @@ class VoxCelebNCUDataModule(pl.LightningDataModule):
 
         _, files1, files2 = read_voxceleb_pairs_txt(valid_config.trials_file_path)
         valid_file_paths = np.unique(np.concatenate((files1, files2)))
-        self.valid_spk_ids = {p.split("/")[-3] for p in valid_file_paths}
+        self.valid_spk_ids = extract_speaker_ids_from_paths(valid_file_paths)
 
     def train_dataloader(self):
         if self.use_unique_batch_sampler:

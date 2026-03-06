@@ -10,14 +10,14 @@ trainer:
   logger:
     - class_path: lightning.pytorch.loggers.tensorboard.TensorBoardLogger
       init_args:
-        save_dir: outputs/ncu-Softloss-alpha0.5-30ep
+        save_dir: outputs/ncu-Softloss-alpha0.5-1ep
         name: null
         version: ""
     - class_path: lightning.pytorch.loggers.WandbLogger
       init_args:
         project: interspeech
         name: NCU-unlearning-supcon
-        save_dir: outputs/ncu-Softloss-alpha0.5-30ep
+        save_dir: outputs/ncu-Softloss-alpha0.5-1ep
         log_model: false
         tags: [ncu, unlearning, supcon, speaker-verification]
   callbacks:
@@ -79,7 +79,7 @@ model:
     alpha: 0.5  # noisy loss 가중치 (pairwise cosine repulsion 세기 조절)
     ncu_loss_type: soft  # "hard": binary split, "soft": p_clean soft weighting
     ncu_clean_threshold: 0.5  # SupCon에 참여하는 confident clean 기준 (hard/soft 공통)
-    ncu_labels_path: outputs/ncu-Softloss-alpha0.5-30ep/ncu_labels.pkl  # 매 에폭 덮어쓰기되는 pickle 경로
+    ncu_labels_path: outputs/ncu-Softloss-alpha0.5-1ep/ncu_labels.pkl  # 매 에폭 덮어쓰기되는 pickle 경로
     ncu_gmm_every_n_epochs: 5  # 몇 에폭마다 GMM fitting할지 (1이면 매 에폭)
     ncu_data_dir: /home/sooyoung/interspeech/dev/aac
     ncu_spk2utt_file_path: /home/sooyoung/interspeech/dev/aac/spk2utt
@@ -98,7 +98,7 @@ data:
     train_config:
       data_dir: /home/sooyoung/interspeech/dev/aac
       spk2utt_file_path: /home/sooyoung/interspeech/dev/aac/spk2utt
-      ncu_labels_path: outputs/ncu-Softloss-alpha0.5-30ep/ncu_labels.pkl
+      ncu_labels_path: outputs/ncu-Softloss-alpha0.5-1ep/ncu_labels.pkl
       wav_processor: torch.nn.Identity
       feature_extractor:
         class_path: data.feature_extractors.SBFbank

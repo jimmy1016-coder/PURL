@@ -1,5 +1,5 @@
 trainer:
-  max_epochs: 230
+  max_epochs: 200 # 230
   num_sanity_val_steps: 0
   check_val_every_n_epoch: 1
   limit_val_batches: 0  # Validation skip (0: skip, 1: run)
@@ -28,6 +28,7 @@ trainer:
         logging_interval: step
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
+        dirpath: outputs/supcon/checkpoints  # run_train.py auto-resume과 경로 일치
         filename: "{epoch}_{step}"
         every_n_epochs: 1
         save_top_k: -1
@@ -105,7 +106,7 @@ data:
       segment_length: 48_000
       samples_per_epoch: 1_000_000 #800_000 # 원래는 1_000_000
       batch_size: 600 # effective batch_size is 2x larger
-      num_workers: 8
+      num_workers: 6
     valid_config:
       data_dir: /home/sooyoung/interspeech/dev/aac # provide path
       trials_file_path: resources/vox2_valid_pairs.txt
@@ -116,7 +117,7 @@ data:
       num_workers: ${data.init_args.train_config.num_workers}
     test_config:
       data_dir: /home/sooyoung/interspeech/dev1 ##path/to/VoxCeleb/vox1_test_wav/wav  # provide path
-      trials_file_path: /home/sooyoung/interspeech/dataset/list_test_hard2.txt ##path/to/VoxCeleb/meta/list_test_hard2.txt  # provide path
+      trials_file_path: /home/sooyoung/interspeech/dataset/voxceleb1_E.txt ##path/to/VoxCeleb/meta/list_test_hard2.txt  # provide path
       feature_extractor: ${data.init_args.train_config.feature_extractor}
       sample_rate: ${data.init_args.train_config.sample_rate}
       segment_length: null
