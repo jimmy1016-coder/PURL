@@ -5,8 +5,6 @@ This repository contains code for:
 **"PURL: Pairwise Unlearning with Reliability Learning for Noisy Correspondence in Supervised Contrastive Speaker Verification"**  
 Anonymous submission to Interspeech 2026.
 
-Repository name is currently legacy (`chns_4090`), but the method implemented here follows the PURL formulation described in the paper draft.
-
 ## Project Status
 
 This repository is a **pre-release research codebase**.
