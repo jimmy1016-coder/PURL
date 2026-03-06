@@ -1,6 +1,4 @@
-import torch
 import torch.nn as nn
-from torchaudio.transforms import MelSpectrogram
 
 from speechbrain.lobes.features import Fbank
 
@@ -11,45 +9,6 @@ class FeatureExtractor(nn.Module):
         Returns data in format [channels, sequence_length, features]
         """
         return NotImplementedError
-
-
-class MelFeatures(FeatureExtractor):
-    def __init__(
-        self,
-        sample_rate: int,
-        n_fft: int,
-        win_length: int,
-        hop_length: int,
-        f_min: int,
-        f_max: int,
-        n_mels: int,
-        power: int,
-        center: bool,
-        log: bool,
-        log_eps: float = 1e-7,
-    ):
-        super().__init__()
-        self.mel_features = MelSpectrogram(
-            sample_rate=sample_rate,
-            n_fft=n_fft,
-            win_length=win_length,
-            hop_length=hop_length,
-            f_min=f_min,
-            f_max=f_max,
-            n_mels=n_mels,
-            power=power,
-            center=center,
-        )
-        self.log = log
-        self.log_eps = log_eps
-
-    def forward(self, x):
-        mels = self.mel_features(x)
-
-        if self.log:
-            mels = torch.log(torch.clamp(mels, min=self.log_eps))
-
-        return mels.permute(0, 2, 1)
 
 
 class SBFbank(FeatureExtractor):

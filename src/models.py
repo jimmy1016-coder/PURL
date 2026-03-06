@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from speechbrain.lobes.models.ECAPA_TDNN import ECAPA_TDNN
-from speechbrain.lobes.models.ECAPA_TDNN import Classifier as SBClassifier
 
 from modules.thin_resnet import ResNetSE
 
@@ -89,52 +88,3 @@ class ResNetEncoder(Encoder):
 class IdentityProjector(Projector):
     def forward(self, x):
         return x
-
-
-class FCProjector(Projector):
-    def __init__(self, input_dim: int, layer_dims: list[int]):
-        super().__init__()
-        self.layers = nn.ModuleList()
-        self.layers.append(nn.Linear(input_dim, layer_dims[0]))
-
-        for k in range(1, len(layer_dims), 1):
-            self.layers.append(
-                nn.Sequential(
-                    nn.BatchNorm1d(layer_dims[k - 1]),
-                    nn.ReLU(),
-                    nn.Linear(layer_dims[k - 1], layer_dims[k]),
-                )
-            )
-
-    def forward(self, x):
-        x = x.squeeze(1)
-        for layer in self.layers:
-            x = layer(x)
-
-        return x.unsqueeze(1)
-
-
-class Classifier(Projector):
-    def __init__(self, num_classes):
-        super().__init__()
-        self.num_classes = num_classes
-
-
-class ECAPAClassifier(Classifier):
-    def __init__(self, input_size, num_classes):
-        super().__init__(num_classes=num_classes)
-        self.classifier = SBClassifier(
-            input_size=input_size, out_neurons=num_classes
-        )
-
-    def forward(self, x):
-        return self.classifier(x)
-
-
-class LinearClassifier(Classifier):
-    def __init__(self, input_size, num_classes):
-        super().__init__(num_classes=num_classes)
-        self.classifier = nn.Linear(input_size, num_classes)
-
-    def forward(self, x):
-        return self.classifier(x.squeeze(1))

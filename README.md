@@ -1,138 +1,162 @@
-# CHNS: Clustering-based hard negative sampling for supervised contrastive speaker verification
+# PURL for Noisy Correspondence SV (Pre-release)
 
-This repository contains the training source code for experiments from the Interspeech 2025 publication "Clustering-based hard negative sampling for supervised contrastive speaker verification"
+This repository contains code for:
 
-<p align="center">
-  <a href="https://arxiv.org/abs/2507.17540" style="font-size:20px;">Full Paper</a>
-</p>
+**"PURL: Pairwise Unlearning with Reliability Learning for Noisy Correspondence in Supervised Contrastive Speaker Verification"**  
+Anonymous submission to Interspeech 2026.
 
-<p align="center">
-  <img src="resources/media/CHNS_Interspeech_poster.jpg" alt="Interspeech 2025 poster" width="300">
-</p>
+Repository name is currently legacy (`chns_4090`), but the method implemented here follows the PURL formulation described in the paper draft.
 
-## Updates
+## Project Status
 
-**16.08.2025**: Added dataset preparation guide to readme.  
-**12.08.2025**: Added training configs and poster.  
-**04.07.2025**: Release a WIP version of the repo. No training configs included.
+This repository is a **pre-release research codebase**.
 
-## Setup
+- It is being prepared for public release and reproducibility.
+- The corresponding Interspeech 2026 submission is **under review** (not yet accepted).
+- APIs, configs, and default paths may still change.
 
-In the root directory of this repository create a virtual environment with python 3.10.
+## Method Overview (Paper-aligned)
+
+PURL is a post-hoc, pair-level unlearning framework for supervised contrastive speaker verification under noisy correspondence.
+
+- **Problem**: Positive pairs can be mismatched in large-scale data, which corrupts pairwise supervision.
+- **Stage 1 (reliability estimation)**: Fit a 2-component GMM on pairwise cosine similarities in a pretrained embedding space and compute pair confidence `w_ij`.
+- **Stage 2 (uncertainty-guided update)**:
+  - retain reliable pairs with SupCon objective
+  - suppress unreliable pairs with weighted cosine repulsion proportional to `(1 - w_ij)`
+- **Goal**: reduce harmful correspondences while preserving clean intra-speaker compactness.
+
+In this codebase, this is implemented through `NCUTrainer` with `ncu_loss_type: soft`.
+
+## What Is Included
+
+This public pre-release keeps four training configs:
+
+- `configs/supcon.yaml`
+- `configs/supcon_resnet34.yaml`
+- `configs/ncu_30ep.yaml`
+- `configs/ncu_30ep_resnet34.yaml`
+
+All machine-specific absolute paths were replaced with placeholders. Update them before running.
+
+## Experiments in This Release
+
+The retained configs correspond to the two backbones and post-hoc setup used in the paper:
+
+- **ECAPA-TDNN**
+  - base SupCon pretraining: `configs/supcon.yaml`
+  - 30-epoch post-hoc update (PURL/NCU): `configs/ncu_30ep.yaml`
+- **Thin ResNet-34**
+  - base SupCon pretraining: `configs/supcon_resnet34.yaml`
+  - 30-epoch post-hoc update (PURL/NCU): `configs/ncu_30ep_resnet34.yaml`
+
+## Environment Setup
+
+Python 3.10 is recommended.
 
 ```bash
-virtualenv venv -p python3.10
-```
-
-and activate it
-
-```bash
-source venv/bin/activate
-```
-
-Install required packages. Feel free to modify the `requirements.txt` so that it matches your cuda version.
-
-```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-After trat run:
-
-```bash
 pip install -e .
 ```
 
-## VoxCeleb dataset preparation
+If you use conda:
 
-1. Go [here](https://mm.kaist.ac.kr/datasets/voxceleb/) to download the VocCeleb 1 and 2 audio files. 
+```bash
+conda create -n chns python=3.10 -y
+conda activate chns
+pip install -r requirements.txt
+pip install -e .
+```
 
-   Download all of the archive parts, concatenate and unzip them in a directory of your choice. In our experiments, we use Vox1 dev, Vox1 test and Vox2 dev.
+## Important Runtime Notes
 
-2. Create a directory for all VoxCeleb audio data in a location of your choice:
+1) Configs use class paths like `trainers.*`, so run with:
 
-   ```sh
-   mkdir VoxCeleb
-   ```
+```bash
+PYTHONPATH=src python run_train.py ...
+PYTHONPATH=src python run_test.py ...
+```
 
+2) NCU/PURL post-hoc runs assume a pretrained SupCon checkpoint via `--ckpt_path`.
 
-2. Convert the VocCeleb2 `.aac` files to 16 kHz mono `.wav` files using a script like [this](https://gist.github.com/seungwonpark/4f273739beef2691cd53b5c39629d830) or similar. This process often takes a long time.
+## Dataset Preparation
 
-3. Create helper mapping files: `spk2utt` and `utt2spk` for each dataset (Vox1 dev, Vox1 test, Vox2 dev). Run the following command with the root diretory that contains individual speaker directories as first argument:
+1. Download VoxCeleb data from the official source: [VoxCeleb download page](https://mm.kaist.ac.kr/datasets/voxceleb/).
+2. Convert source audio to the format expected by your experiments (commonly 16 kHz mono wav/flac).
+3. Create `spk2utt` mapping files:
 
-   ```
-   vox2_dev_wav/
-   └── wav/        ← First argument
-       ├── id00001/
-       │   └── …
-       ├── id00002/
-       │   └── …
-       ├── id00003/
-       │   └── …
-       └── …
-   ```
+```bash
+./scripts/make_spk2utt_and_utt2spk.sh /path/to/vox2_dev_wav/wav
+```
 
-   You can provide an optional output dir as second argument.    Otherwise, the `spk2utt` and `utt2spk` files will be saved do the    dir specified in the first argument.
+4. Edit each config to set placeholders such as:
 
-   ```sh
-   ./scripts/make_spk2utt_and_utt2spk.sh path/to/vox2_dev_wav/wav    optional/output/dir
-   ```
+- `/path/to/vox2_dev_wav/wav`
+- `/path/to/vox2_dev_wav/wav/spk2utt`
+- `/path/to/vox1_test_wav/wav`
+- `/path/to/voxceleb1_H.txt`
+
+5. Ensure `spk2utt` files are consistent with your data layout and path conventions.
 
 ## Train
 
-This project uses `lightning` and specifically `LightningCLI` for configuration management. Each experiment setup should be defined in a separate `.yaml` file. The arguments can be overridden from the command line.
+SupCon (ECAPA):
 
-To run the training script of the base SupCon model run:
-
-```
-python run_train.py --config configs/supcon.yaml
+```bash
+PYTHONPATH=src python run_train.py --config configs/supcon.yaml
 ```
 
-Same for the supervised AAMSoftmax model:
+SupCon (ResNet34):
 
-```
-python run_train.py --config configs/aamsoftmax.yaml
-```
-
-Remember to update your train data paths in the config files.
-
-After the base model has been trained, run the clustering step. Provide the specific checkpoint name you want to use:
-
-```
-python run_clustering.py --config configs/supcon.yaml --ckpt_name last
+```bash
+PYTHONPATH=src python run_train.py --config configs/supcon_resnet34.yaml
 ```
 
-The output of this step is a `.pkl` file that contains a python dict which maps speaker ids to cluster ids.
+PURL post-hoc update (ECAPA, 30 epochs):
 
-Having constructed the clusters, you can run any of the CHNS models (`chns.yaml`, `chns_hscl.yaml`) after updating the `data.init_args.batch_sampler_config.cluster_dict_path` argument in the config file:
-
-```
-python run_train.py --config configs/chns.yaml
+```bash
+PYTHONPATH=src python run_train.py --config configs/ncu_30ep.yaml --ckpt_path /path/to/base_supcon.ckpt
 ```
 
-## Test
+PURL post-hoc update (ResNet34, 30 epochs):
 
-To test any of the models on your desired test dataset (eg. Vox1-H) run:
-
-```
-python run_test.py --config configs/chns.yaml
+```bash
+PYTHONPATH=src python run_train.py --config configs/ncu_30ep_resnet34.yaml --ckpt_path /path/to/base_supcon_resnet34.ckpt
 ```
 
-Remember to specify the proper test data paths in the config file.
+## Evaluation
 
----
+```bash
+PYTHONPATH=src python run_test.py --config configs/ncu_30ep.yaml --ckpt_name epoch=XXX_step=YYYY
+```
+
+or
+
+```bash
+PYTHONPATH=src python run_test.py --config configs/supcon.yaml --ckpt_name epoch=XXX_step=YYYY
+```
+
+`--ckpt_name` should be the checkpoint filename stem under `<save_dir>/checkpoints`.
+
+## Reproducibility Notes
+
+- `run_train.py` supports `--ckpt_path` for explicit resume.
+- `run_test.py` expects `--ckpt_name` and uses the checkpoint directory from logger config.
+- For smoke tests with `limit_test_batches` or `fast_dev_run`, only partial trial embeddings are computed.
+- `ncu_30ep*.yaml` currently uses `voxceleb1_H`-style placeholder for default test trials.
+
+## Planned Updates
+
+- Add final camera-ready paper link and BibTeX after decision/publication.
+- Add exact benchmark scripts and standardized evaluation table templates for easier replication.
 
 ## Citation
-If you find this work useful, please cite:
 
-```bibtex
-@inproceedings{masztalski25_chns,
-  title     = {{Clustering-based Hard Negative Sampling for Supervised Contrastive Speaker Verification}},
-  author    = {{Piotr Masztalski and Michał Romaniuk and Jakub Żak and Mateusz Matuszewski and Konrad Kowalczyk}},
-  year      = {{2025}},
-  booktitle = {{Interspeech 2025}},
-  pages     = {{3698--3702}},
-  doi       = {{10.21437/Interspeech.2025-442}},
-  issn      = {{2958-1796}},
-}
-```
+If you use this code, please cite the final paper once available.
+
+Temporary reference:
+
+> PURL: Pairwise Unlearning with Reliability Learning for Noisy Correspondence in Supervised Contrastive Speaker Verification (Interspeech 2026 submission, under review)
 

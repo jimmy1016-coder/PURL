@@ -68,8 +68,8 @@ data:
   class_path: data.VoxCelebSupConDataModule
   init_args:
     train_config:
-      data_dir: /home/sooyoung/interspeech/dev/aac #path/to/VoxCeleb/vox2_dev_wav/wav  # provide path
-      spk2utt_file_path: /home/sooyoung/interspeech/dev/aac/spk2utt  #path/to/VoxCeleb/vox2_dev_wav/wav/spk2utt  # provide path
+      data_dir: /path/to/vox2_dev_wav/wav
+      spk2utt_file_path: /path/to/vox2_dev_wav/wav/spk2utt
       wav_processor: torch.nn.Identity
       feature_extractor:
         class_path: data.feature_extractors.SBFbank
@@ -88,7 +88,7 @@ data:
       batch_size: 600 # effective batch_size is 2x larger
       num_workers: 8
     valid_config:
-      data_dir: /home/sooyoung/interspeech/dev/aac # provide path
+      data_dir: /path/to/vox2_dev_wav/wav
       trials_file_path: resources/vox2_valid_pairs.txt
       feature_extractor: ${data.init_args.train_config.feature_extractor}
       sample_rate: ${data.init_args.train_config.sample_rate}
@@ -96,16 +96,16 @@ data:
       batch_size: 1
       num_workers: ${data.init_args.train_config.num_workers}
     test_config:
-      data_dir: /home/sooyoung/interspeech/dev1 ##path/to/VoxCeleb/vox1_test_wav/wav  # provide path
-      trials_file_path: /home/sooyoung/interspeech/dataset/list_test_hard2.txt ##path/to/VoxCeleb/meta/list_test_hard2.txt  # provide path
+      data_dir: /path/to/vox1_test_wav/wav
+      trials_file_path: /path/to/voxceleb1_H.txt
       feature_extractor: ${data.init_args.train_config.feature_extractor}
       sample_rate: ${data.init_args.train_config.sample_rate}
       segment_length: null
       batch_size: 1
       num_workers: ${data.init_args.train_config.num_workers}
     clustering_config:
-      data_dir: /home/sooyoung/interspeech/dev/aac  # provide path
-      spk2utt_file_path: /home/sooyoung/interspeech/dev/aac/spk2utt  #path/to/VoxCeleb/vox2_dev_wav/wav/spk2utt  # provide path
+      data_dir: /path/to/vox2_dev_wav/wav
+      spk2utt_file_path: /path/to/vox2_dev_wav/wav/spk2utt
       wav_processor: ${data.init_args.train_config.wav_processor}
       feature_extractor: ${data.init_args.train_config.feature_extractor}
       sample_rate: ${data.init_args.train_config.sample_rate}

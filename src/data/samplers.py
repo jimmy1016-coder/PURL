@@ -5,7 +5,7 @@ from typing import Optional
 import numpy as np
 from torch.utils.data import Sampler
 
-from data.data_utils import read_voxceleb_pairs_txt, load_spk2utt
+from data.data_utils import load_spk2utt
 
 
 class ClusterBatchSampler(Sampler):

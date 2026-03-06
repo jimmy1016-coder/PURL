@@ -8,9 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import transformers
-from torchmetrics import Accuracy, F1Score, MetricCollection, Precision, Recall
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import normalize
 
 from data.data_utils import (
     write_pairs_output_txt,
@@ -116,31 +114,6 @@ class BaseTrainer(pl.LightningModule):
         print(full_output_message)
         print(f"Output scores and metrics saved to {output_dir_path}.")
 
-    def on_predict_start(self):
-        if self.clustering_model is None:
-            raise RuntimeError("Clustering model is not provided in config.")
-        loaded_ckpt_epoch = self._get_loaded_ckpt_epoch()
-        self.cluster_output_file = Path(self.logger.save_dir) / f"clusters_k{self.clustering_model.n_clusters}_epoch{loaded_ckpt_epoch}.pkl"
-        print("COMPUTING EMBEDDING CENTROIDS")
-
-    def predict_step(self, batch):
-        spec, speaker_id = batch
-
-        embs = self.encoder(spec.squeeze())
-        embs = self.projector(embs)
-
-        centroid = embs.mean(dim=0).squeeze()
-
-        return str(speaker_id[0]), centroid.detach().cpu().numpy()
-
-    def cluster(self, embedding_centroids: np.ndarray):
-        print("RUNNING CLUSTERING")
-
-        embedding_centroids = normalize(embedding_centroids)
-        cluster_labels = self.clustering_model.fit_predict(embedding_centroids)
-
-        return cluster_labels
-
     def configure_optimizers(self):
         opt = torch.optim.Adam(
             self.parameters(),
@@ -202,71 +175,6 @@ class SupervisedTrainer(BaseTrainer):
             name="valid/min_dcf",
             value=min_dcf,
         )
-
-
-class SSLContrastiveTrainer(BaseTrainer):
-    def _log_audio(self, audios, prefix):
-        audio1 = audios[0, 0]
-        audio2 = audios[0, 1]
-
-        self.logger.experiment.add_audio(
-            f"{prefix}/audio1",
-            audio1.to("cpu"),
-            self.global_step,
-            self.sample_rate,
-        )
-        self.logger.experiment.add_audio(
-            f"{prefix}/audio2",
-            audio2.to("cpu"),
-            self.global_step,
-            self.sample_rate,
-        )
-
-    def _step(self, prefix, batch):
-        features, audios = batch
-
-        if self.global_step < 5 and self.global_rank == 0:
-            self._log_audio(audios, prefix)
-
-        features1 = features[:, 0]
-        features2 = features[:, 1]
-
-        # input shape: [batch, time, features]
-        embs = self.encoder(
-            torch.cat(
-                [features1, features2],
-                dim=0,
-            )
-        )
-        embs = self.projector(embs)
-        # output shape: [batch, 1, emb_size]
-
-        emb1, emb2 = torch.split(embs, features.shape[0])
-
-        loss, metrics = self.loss_func(
-            emb1.squeeze(1),
-            emb2.squeeze(1),
-        )
-
-        on_step = True if prefix == "train" else False
-
-        for k, v in metrics.items():
-            self.log(
-                f"{prefix}/{k}",
-                float(v),
-                on_step=on_step,
-                on_epoch=True,
-                sync_dist=True,
-                batch_size=len(batch),
-            )
-
-        return loss
-
-    def training_step(self, batch):
-        return self._step("train", batch)
-
-    def validation_step(self, batch):
-        return self._step("valid", batch)
 
 
 class SupConTrainer(SupervisedTrainer):
@@ -642,91 +550,3 @@ class NCUTrainer(SupervisedTrainer):
 
         loss = torch.nan_to_num(loss, nan=0.0, posinf=1e4, neginf=-1e4)
         return loss, loss_clean_val, loss_noisy_val, n_clean, n_noisy
-
-
-class ClassificationTrainer(SupervisedTrainer):
-    def __init__(
-        self,
-        encoder: Encoder,
-        projector: Projector,
-        clustering_model: KMeans,
-        loss_func: nn.Module,
-        learning_rate: float,
-        optim_weight_decay: float,
-        lr_scheduler_type: str,
-        sample_rate: int,
-        samples_per_epoch: Optional[int] = None,
-        batch_size: Optional[int] = None,
-    ):
-        super().__init__(
-            encoder=encoder,
-            projector=projector,
-            clustering_model=clustering_model,
-            loss_func=loss_func,
-            learning_rate=learning_rate,
-            optim_weight_decay=optim_weight_decay,
-            lr_scheduler_type=lr_scheduler_type,
-            sample_rate=sample_rate,
-            samples_per_epoch=samples_per_epoch,
-            batch_size=batch_size,
-        )
-        self.train_metrics = self._build_metrics_collection("train")
-
-    def _build_metrics_collection(self, prefix):
-        metrics = MetricCollection(
-            {
-                f"{prefix}/accuracy": Accuracy(task="multiclass", num_classes=self.projector.num_classes),
-                f"{prefix}/precision": Precision(task="multiclass", num_classes=self.projector.num_classes),
-                f"{prefix}/recall": Recall(task="multiclass", num_classes=self.projector.num_classes),
-                f"{prefix}/macrof1": F1Score(
-                    task="multiclass", average="macro", num_classes=self.projector.num_classes
-                ),
-            }
-        )
-
-        return metrics
-
-    def _log_audio(self, audio, prefix):
-        self.logger.experiment.add_audio(
-            f"{prefix}/audio",
-            audio.to("cpu"),
-            self.global_step,
-            self.sample_rate,
-        )
-
-    def _log_metrics(self, predictions, targets, loss, prefix):
-        self.train_metrics(
-            torch.argmax(predictions, dim=-1),
-            torch.argmax(targets, dim=-1),
-        )
-
-        on_step = True if prefix == "train" else False
-
-        self.log(f"{prefix}/loss", loss, on_step=on_step, on_epoch=True)
-        self.log_dict(self.train_metrics, on_step=False, on_epoch=True, prog_bar=False)
-
-    def _step(self, prefix, batch):
-        features, audios, labels = batch
-
-        if self.global_step < 5 and self.global_rank == 0:
-            self._log_audio(audios[0], prefix)
-
-        # input shape: [batch, time, features]
-        embs = self.encoder(features)
-        logits = self.projector(embs)  # in this case the projector is the classifier
-        # output shape: [batch, 1, emb_size]
-
-        if isinstance(self.loss_func, nn.CrossEntropyLoss):
-            loss = self.loss_func(logits, labels.argmax(dim=-1, keepdim=False))
-        else:
-            loss = self.loss_func(logits, labels.argmax(dim=-1, keepdim=True))
-
-        predictions = torch.softmax(logits.squeeze(), dim=1)
-        targets = labels.int().squeeze()
-
-        self._log_metrics(predictions=predictions, targets=targets, loss=loss.mean(), prefix=prefix)
-
-        return loss
-
-    def training_step(self, batch):
-        return self._step("train", batch)

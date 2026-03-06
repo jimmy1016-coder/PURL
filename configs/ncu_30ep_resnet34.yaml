@@ -56,8 +56,8 @@ model:
     ncu_clean_threshold: 0.5  # SupCon에 참여하는 confident clean 기준 (hard/soft 공통)
     ncu_labels_path: outputs/ncu-Softloss-alpha0.5-30ep-resnet34/ncu_labels.pkl  # 매 에폭 덮어쓰기되는 pickle 경로
     ncu_gmm_every_n_epochs: 30  # 몇 에폭마다 GMM fitting할지 (1이면 매 에폭)
-    ncu_data_dir: /home/sooyoung/interspeech/dev/aac
-    ncu_spk2utt_file_path: /home/sooyoung/interspeech/dev/aac/spk2utt
+    ncu_data_dir: /path/to/vox2_dev_wav/wav
+    ncu_spk2utt_file_path: /path/to/vox2_dev_wav/wav/spk2utt
     ncu_batch_size: 2048  # embedding 추출 시 배치 크기
     ncu_num_workers: 8  # embedding 추출 시 워커 수
     # 기존 학습 파라미터
@@ -71,8 +71,8 @@ data:
   class_path: data.VoxCelebNCUDataModule
   init_args:
     train_config:
-      data_dir: /home/sooyoung/interspeech/dev/aac
-      spk2utt_file_path: /home/sooyoung/interspeech/dev/aac/spk2utt
+      data_dir: /path/to/vox2_dev_wav/wav
+      spk2utt_file_path: /path/to/vox2_dev_wav/wav/spk2utt
       ncu_labels_path: outputs/ncu-Softloss-alpha0.5-30ep-resnet34/ncu_labels.pkl
       wav_processor: torch.nn.Identity
       feature_extractor:
@@ -92,7 +92,7 @@ data:
       batch_size: 600  # effective batch_size is 2x larger
       num_workers: 8
     valid_config:
-      data_dir: /home/sooyoung/interspeech/dev/aac
+      data_dir: /path/to/vox2_dev_wav/wav
       trials_file_path: resources/vox2_valid_pairs.txt
       feature_extractor: ${data.init_args.train_config.feature_extractor}
       sample_rate: ${data.init_args.train_config.sample_rate}
@@ -100,8 +100,8 @@ data:
       batch_size: 1
       num_workers: ${data.init_args.train_config.num_workers}
     test_config:
-      data_dir: /home/sooyoung/interspeech/dev1
-      trials_file_path: /home/sooyoung/interspeech/dataset/list_test_hard2.txt
+      data_dir: /path/to/vox1_test_wav/wav
+      trials_file_path: /path/to/voxceleb1_H.txt
       feature_extractor: ${data.init_args.train_config.feature_extractor}
       sample_rate: ${data.init_args.train_config.sample_rate}
       segment_length: null

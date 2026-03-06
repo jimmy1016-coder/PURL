@@ -1,6 +1,9 @@
 MIT License
 
-Copyright (c) 2025 Piotr Masztalski
+This project is based on CHNS (Clustering-based Hard Negative Sampling for Supervised
+Contrastive Speaker Verification) by Piotr Masztalski et al., Interspeech 2025.
+
+Copyright (c) 2026 Sooyoung Yang
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

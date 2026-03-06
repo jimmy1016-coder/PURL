@@ -113,3 +113,8 @@ env/
 
 configs_local
 outputs
+
+*.sh
+
+streamlit_gmm_pairs.py
+streamlit_tsne.py
